@@ -14,7 +14,7 @@ import torch
 from transformers import pipeline
 
 import config
-from audio import pcm16_to_float32
+from audio import is_silent, pcm16_to_float32
 
 log = logging.getLogger("whisper_engine")
 
@@ -46,7 +46,10 @@ class WhisperEngine:
         log.info("whisper-stt loaded model=%s device=%s dtype=%s", model_id, self.device, dtype)
 
     def _run(self, pcm: bytes, language: str, prompt: str | None, word_ts: bool):
-        if len(pcm) < 2:
+        # Gate silence/non-speech BEFORE invoking Whisper: the model hallucinates
+        # stock phrases ("Thank you.") on empty audio, so treat low-energy input
+        # as "no speech" (caller returns 204).
+        if len(pcm) < 2 or is_silent(pcm, config.SILENCE_RMS_THRESHOLD):
             return None
         audio = pcm16_to_float32(pcm)
         generate_kwargs = {"task": "transcribe"}

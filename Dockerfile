@@ -23,12 +23,15 @@ COPY requirements.txt .
 # torch/torchaudio from the cu124 wheel index; everything else from PyPI in one call.
 RUN pip install --extra-index-url https://download.pytorch.org/whl/cu124 -r requirements.txt
 
-COPY *.py ./
+# Prefetch the weights BEFORE copying the app code: it depends only on
+# requirements + config (MODEL_ID) + the script, so editing app code no longer
+# re-triggers the multi-GB model download on rebuild.
+COPY config.py ./
 COPY scripts/ ./scripts/
-COPY version.json ./
-
-# Bake the model weights into the image (build has network; runtime does not need any).
 RUN python scripts/prefetch_models.py
+
+COPY *.py ./
+COPY version.json ./
 
 EXPOSE 8000
 
