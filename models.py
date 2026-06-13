@@ -21,3 +21,4 @@ class InfoResponse(BaseModel):
     version: str
     modelId: str
     device: str
+    modelLoaded: bool = True

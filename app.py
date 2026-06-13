@@ -33,7 +33,7 @@ def _build_engine():
         return EchoEngine()
     from whisper_engine import WhisperEngine
 
-    return WhisperEngine(config.MODEL_ID)
+    return WhisperEngine(config.MODEL_ID, idle_unload_seconds=config.IDLE_UNLOAD_SECONDS)
 
 
 @asynccontextmanager
@@ -57,6 +57,7 @@ def info():
         version=_VERSION,
         modelId=config.MODEL_ID,
         device=getattr(engine, "device", "unknown"),
+        modelLoaded=getattr(engine, "model_loaded", True),
     )
 
 
