@@ -1,0 +1,9 @@
+# Native macOS / Apple Silicon deps. torch ships with MPS support from PyPI on
+# arm64 (no CUDA wheel index). Used by scripts/run-native.sh — NOT the Docker image.
+fastapi
+uvicorn[standard]
+pydantic
+numpy
+torch==2.6.0
+transformers
+accelerate

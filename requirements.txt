@@ -1,0 +1,9 @@
+# CUDA runtime deps. torch/torchaudio install from the cu124 wheel index (see
+# Dockerfile); the rest resolve from PyPI.
+fastapi
+uvicorn[standard]
+pydantic
+numpy
+torch==2.6.0
+transformers
+accelerate
