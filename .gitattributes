@@ -1,0 +1,7 @@
+# Force LF for files that run inside Linux containers / on macOS, regardless of
+# the host OS the repo is checked out on. Prevents CRLF from breaking shell
+# scripts and the Dockerfile.
+* text=auto eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.py text eol=lf
