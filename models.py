@@ -22,3 +22,4 @@ class InfoResponse(BaseModel):
     modelId: str
     device: str
     modelLoaded: bool = True
+    loadError: str | None = None
