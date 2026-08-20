@@ -16,13 +16,25 @@ Audio is the raw request **body**: 16 kHz mono signed-16-bit little-endian PCM.
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/health` | — | `{ "loaded": true }` |
-| GET | `/info` | — | `{ "version", "modelId", "device" }` where `device ∈ {cuda, mps, cpu}` |
+| GET | `/health` | — | `{ "loaded": bool, "healthy": bool, "error"? }` — **503** when the last model load failed |
+| GET | `/info` | — | `{ "version", "modelId", "device", "modelLoaded", "loadError" }` where `device ∈ {cuda, mps, cpu}` |
 | POST | `/v1/transcribe` | PCM | `{ "text": "..." }` or `204` (no speech) |
 | POST | `/v1/transcribe/detailed` | PCM | `{ "text", "tokens": [{text,startMs,endMs}] }` or `204` |
 
 `device == "cpu"` is logged loudly and surfaced in `/info` — a CPU fallback means
 slow transcripts and should never pass silently.
+
+`healthy` is deliberately **not** the same as `loaded`. The idle reaper releases the
+model from VRAM after `WHISPER_IDLE_UNLOAD_SECONDS`, so `loaded: false` is a normal
+resting state that reloads on the next request. Only a *failed load attempt* sets
+`healthy: false` and answers `503`, which is what the container `HEALTHCHECK` keys on.
+
+This distinction matters: a host GPU driver update can invalidate the CUDA context
+underneath a long-running container, after which every reload raises
+`CUDA error: unknown error` and never recovers in-process. When that happens after a
+previously successful load, the process exits so the container restart policy rebuilds
+the context (disable with `WHISPER_EXIT_ON_LOAD_FAILURE=0`). A cold-boot failure is
+excluded from that path, so a genuinely broken image cannot crash-loop on it.
 
 ## Run
 

@@ -14,6 +14,7 @@ path (EchoEngine) never loads them.
 """
 import gc
 import logging
+import os
 import threading
 import time
 
@@ -22,6 +23,7 @@ from transformers import pipeline
 
 import config
 from audio import is_silent, pcm16_to_float32
+from engine import should_exit_on_load_failure
 
 log = logging.getLogger("whisper_engine")
 
@@ -44,6 +46,8 @@ class WhisperEngine:
         self._pipe = None
         self._lock = threading.Lock()
         self._last_used = time.monotonic()
+        self._load_error: str | None = None
+        self._ever_loaded = False
 
         if self.device == "cpu":
             log.warning(
@@ -65,14 +69,47 @@ class WhisperEngine:
     def model_loaded(self) -> bool:
         return self._pipe is not None
 
+    @property
+    def load_error(self) -> str | None:
+        """Message from the last failed load, or None if the last load attempt was fine.
+
+        This is what separates "the reaper unloaded us, we'll reload on demand" from
+        "we tried to reload and the device rejected us". `model_loaded` alone cannot
+        tell those apart — it is False in both cases.
+        """
+        return self._load_error
+
+    @property
+    def healthy(self) -> bool:
+        """True unless the last load attempt failed.
+
+        Deliberately NOT `model_loaded`: an idle-unloaded model is perfectly healthy
+        and reloads on the next request. Reporting that as unhealthy would flap the
+        container health every idle period.
+        """
+        return self._load_error is None
+
     def _load_locked(self):
         if self._pipe is None:
-            self._pipe = pipeline(
-                "automatic-speech-recognition",
-                model=self._model_id,
-                torch_dtype=self._dtype,
-                device=self.device,
-            )
+            try:
+                self._pipe = pipeline(
+                    "automatic-speech-recognition",
+                    model=self._model_id,
+                    torch_dtype=self._dtype,
+                    device=self.device,
+                )
+            except Exception as exc:
+                # Record before re-raising so /health can report the real state.
+                # The dominant real-world cause is a CUDA context invalidated by a
+                # host driver update underneath a long-running container: the weights
+                # load from disk fine and only the move to the device fails, with
+                # "CUDA error: unknown error". It never recovers in-process — only a
+                # process restart rebuilds the context.
+                self._load_error = f"{type(exc).__name__}: {exc}"
+                log.error("whisper-stt model load FAILED on %s: %s", self.device, self._load_error)
+                raise
+            self._load_error = None
+            self._ever_loaded = True
             log.info("whisper-stt model loaded to %s (dtype=%s)", self.device, self._dtype)
 
     def _unload_locked(self):
@@ -105,13 +142,41 @@ class WhisperEngine:
             generate_kwargs["language"] = language
 
         with self._lock:
-            self._load_locked()  # lazy reload if the reaper unloaded us
+            try:
+                self._load_locked()  # lazy reload if the reaper unloaded us
+            except Exception:
+                self._schedule_exit_if_unrecoverable()
+                raise
             self._last_used = time.monotonic()
             return self._pipe(
                 {"array": audio, "sampling_rate": config.SAMPLE_RATE},
                 return_timestamps="word" if word_ts else False,
                 generate_kwargs=generate_kwargs,
             )
+
+    def _schedule_exit_if_unrecoverable(self):
+        """Take the process down so the container restart policy can rebuild the device context.
+
+        Only fires when the model had loaded successfully at least once, i.e. this was a
+        lazy reload after an idle unload. That is the signature of a device context that
+        died underneath us (host GPU driver update), which no amount of in-process retrying
+        fixes — the 2026-08-17→19 outage sat in exactly this state for two days, answering
+        every transcription with HTTP 500 while the container still reported healthy.
+
+        A cold-boot failure is deliberately excluded: it already propagates out of the
+        eager load in __init__ and fails startup, so this can never add a new crash loop.
+        The exit is deferred briefly so the in-flight request still receives its error
+        response instead of a reset connection.
+        """
+        if not should_exit_on_load_failure(self._ever_loaded, config.EXIT_ON_LOAD_FAILURE):
+            return
+
+        log.critical(
+            "whisper-stt model reload failed after a previously successful load (%s) — "
+            "device context is unrecoverable in-process; exiting so the container restarts",
+            self._load_error,
+        )
+        threading.Timer(1.0, lambda: os._exit(1)).start()
 
     def transcribe(self, pcm: bytes, language: str, prompt: str | None) -> str | None:
         out = self._run(pcm, language, prompt, word_ts=False)
